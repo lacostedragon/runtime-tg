@@ -25,7 +25,7 @@ import aiosqlite
 BOT_TOKEN     = os.environ["BOT_TOKEN"]
 API_PORT      = int(os.environ.get("PORT", 8080))
 CHANNEL_ID    = os.environ.get("CHANNEL_ID", "@runtime_visuals")   # @username или -100xxx
-ADMIN_GROUP   = int(os.environ["-1003816137985"])                   # ID группы админов (отрицательное число)
+ADMIN_GROUP   = int(os.environ.get("ADMIN_GROUP_ID", "-1003816137985"))
 TIMEOUT_SEC   = 90
 DB_PATH       = "runtime.db"
 MSK           = timezone(timedelta(hours=3))
