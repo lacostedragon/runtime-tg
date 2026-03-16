@@ -62,6 +62,10 @@ async def handle_online(request: web.Request) -> web.Response:
     return web.json_response({"online": get_online()})
 
 
+async def handle_root(request: web.Request) -> web.Response:
+    return web.json_response({"status": "ok", "online": get_online()})
+
+
 async def cleanup_loop():
     """Каждые 60 сек чистим мёртвые записи чтобы dict не рос вечно."""
     while True:
@@ -109,6 +113,7 @@ async def cmd_start(message: types.Message):
 
 async def main():
     app = web.Application()
+    app.router.add_get("/", handle_root)
     app.router.add_post("/heartbeat", handle_heartbeat)
     app.router.add_get("/online", handle_online)
 
