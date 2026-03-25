@@ -24,7 +24,7 @@ import aiosqlite
 # ─── CONFIG ────────────────────────────────────────────────────────────────────
 BOT_TOKEN     = os.environ["BOT_TOKEN"]
 API_PORT      = int(os.environ.get("PORT", 8080))
-CHANNEL_ID    = os.environ.get("CHANNEL_ID", "@runtime_visuals")   # @username или -100xxx
+CHANNEL_ID    = os.environ.get("CHANNEL_ID", "@runtime_visuals")   # @useёrname или -100xxx
 ADMIN_GROUP   = int(os.environ.get("ADMIN_GROUP_ID", "-1003709336541"))
 TIMEOUT_SEC   = 90
 DB_PATH       = "runtime.db"
@@ -408,9 +408,7 @@ async def admin_reply(message: types.Message):
         return
     user_id, type_ = row
     label = "🛠 Тех. поддержка" if type_ == "support" else "🐛 Баг-репорт"
-    admin = message.from_user
-    admin_name = f"@{admin.username}" if admin.username else admin.full_name
-    header = f"📩 <b>Ответ от администратора</b> ({label})\n👤 {admin_name}\n─────────────────\n"
+    header = f"📩 <b>Ответ от администратора</b> ({label})\n─────────────────\n"
 
     try:
         if message.text:
