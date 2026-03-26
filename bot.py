@@ -46,6 +46,16 @@ class SupportState(StatesGroup):
     waiting_bugreport = State()
 
 
+class DownloadStates(StatesGroup):
+    waiting_for_text = State()
+    waiting_for_file = State()
+
+
+class DownloadStates(StatesGroup):
+    waiting_for_text = State()
+    waiting_for_file = State()
+
+
 # ─── DATABASE ──────────────────────────────────────────────────────────────────
 
 async def init_db():
@@ -80,6 +90,15 @@ async def init_db():
                 type         TEXT
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS download_info (
+                id INTEGER PRIMARY KEY DEFAULT 1,
+                text TEXT,
+                file_id TEXT
+            )
+        """)
+        # Ensure the download_info row exists
+        await db.execute("INSERT OR IGNORE INTO download_info (id) VALUES (1)")
         await db.commit()
 
 
@@ -176,6 +195,7 @@ def main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🟢 Онлайн")],
+            [KeyboardButton(text="📥 Скачать")],
             [KeyboardButton(text="🛠 Тех. поддержка"), KeyboardButton(text="🐛 Баг-репорт")],
         ],
         resize_keyboard=True
@@ -315,6 +335,154 @@ async def online_handler(message: types.Message):
         parse_mode="HTML",
         reply_markup=main_keyboard()
     )
+
+
+# ─── DOWNLOAD ──────────────────────────────────────────────────────────────────
+
+async def get_download_info():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT text, file_id FROM download_info WHERE id = 1") as cursor:
+            return await cursor.fetchone()
+
+async def update_download_info(text: str, file_id: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE download_info SET text = ?, file_id = ? WHERE id = 1", (text, file_id))
+        await db.commit()
+
+@dp.message(Command("download"), F.chat.id == ADMIN_GROUP)
+async def download_command(message: types.Message, state: FSMContext):
+    await state.set_state(DownloadStates.waiting_for_text)
+    await message.answer(
+        "⚙️ <b>Режим обновления файла для скачивания</b>\n\n"
+        "Шаг 1/2: Отправь мне текст-инструкцию, который увидят пользователи перед скачиванием.\n\n"
+        "Можно использовать HTML-теги для форматирования (<code>&lt;b&gt;</code>, <code>&lt;i&gt;</code> и т.д.).\n\n"
+        "Для отмены напиши /cancel",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+@dp.message(DownloadStates.waiting_for_text, F.chat.id == ADMIN_GROUP)
+async def download_text_handler(message: types.Message, state: FSMContext):
+    if not message.text:
+        await message.answer("❌ Пожалуйста, отправь текстовое сообщение.")
+        return
+
+    await state.update_data(download_text=message.html_text) # Сохраняем с HTML
+    await state.set_state(DownloadStates.waiting_for_file)
+    await message.answer(
+        "Шаг 2/2: Отлично! Теперь отправь мне файл (например, .zip архив), который будут скачивать пользователи.",
+        parse_mode="HTML"
+    )
+
+@dp.message(DownloadStates.waiting_for_file, F.document, F.chat.id == ADMIN_GROUP)
+async def download_file_handler(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    download_text = data.get('download_text')
+    file_id = message.document.file_id
+
+    await update_download_info(download_text, file_id)
+    await state.clear()
+
+    await message.answer(
+        "✅ <b>Файл и инструкция успешно обновлены!</b>\n\nПользователи теперь будут получать новую версию.",
+        parse_mode="HTML",
+        reply_markup=main_keyboard()
+    )
+
+@dp.message(F.text == "📥 Скачать")
+async def user_download_handler(message: types.Message):
+    if not await require_sub(message):
+        return
+
+    info = await get_download_info()
+    text, file_id = (info[0], info[1]) if info else (None, None)
+
+    if not text or not file_id:
+        await message.answer("😔 К сожалению, файл для скачивания еще не был загружен администратором.")
+        return
+
+    # Отправляем инструкцию
+    await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+    # Отправляем файл
+    try:
+        await message.answer_document(file_id)
+    except Exception as e:
+        log.error(f"Failed to send document by file_id: {e}")
+        await message.answer("❌ Произошла ошибка при отправке файла. Пожалуйста, сообщите администратору.")
+
+
+# ─── DOWNLOAD ──────────────────────────────────────────────────────────────────
+
+async def get_download_info():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT text, file_id FROM download_info WHERE id = 1") as cursor:
+            return await cursor.fetchone()
+
+async def update_download_info(text: str, file_id: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE download_info SET text = ?, file_id = ? WHERE id = 1", (text, file_id))
+        await db.commit()
+
+@dp.message(Command("download"), F.chat.id == ADMIN_GROUP)
+async def download_command(message: types.Message, state: FSMContext):
+    await state.set_state(DownloadStates.waiting_for_text)
+    await message.answer(
+        "⚙️ <b>Режим обновления файла для скачивания</b>\n\n"
+        "Шаг 1/2: Отправь мне текст-инструкцию, который увидят пользователи перед скачиванием.\n\n"
+        "Можно использовать HTML-теги для форматирования (<code>&lt;b&gt;</code>, <code>&lt;i&gt;</code> и т.д.).\n\n"
+        "Для отмены напиши /cancel",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+@dp.message(DownloadStates.waiting_for_text, F.chat.id == ADMIN_GROUP)
+async def download_text_handler(message: types.Message, state: FSMContext):
+    if not message.text:
+        await message.answer("❌ Пожалуйста, отправь текстовое сообщение.")
+        return
+
+    await state.update_data(download_text=message.html_text) # Сохраняем с HTML
+    await state.set_state(DownloadStates.waiting_for_file)
+    await message.answer(
+        "Шаг 2/2: Отлично! Теперь отправь мне файл (например, .zip архив), который будут скачивать пользователи.",
+        parse_mode="HTML"
+    )
+
+@dp.message(DownloadStates.waiting_for_file, F.document, F.chat.id == ADMIN_GROUP)
+async def download_file_handler(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    download_text = data.get('download_text')
+    file_id = message.document.file_id
+
+    await update_download_info(download_text, file_id)
+    await state.clear()
+
+    await message.answer(
+        "✅ <b>Файл и инструкция успешно обновлены!</b>\n\nПользователи теперь будут получать новую версию.",
+        parse_mode="HTML",
+        reply_markup=main_keyboard()
+    )
+
+@dp.message(F.text == "📥 Скачать")
+async def user_download_handler(message: types.Message):
+    if not await require_sub(message):
+        return
+
+    info = await get_download_info()
+    text, file_id = (info[0], info[1]) if info else (None, None)
+
+    if not text or not file_id:
+        await message.answer("😔 К сожалению, файл для скачивания еще не был загружен администратором.")
+        return
+
+    # Отправляем инструкцию
+    await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+    # Отправляем файл
+    try:
+        await message.answer_document(file_id)
+    except Exception as e:
+        log.error(f"Failed to send document by file_id: {e}")
+        await message.answer("❌ Произошла ошибка при отправке файла. Пожалуйста, сообщите администратору.")
 
 
 @dp.message(F.text == "🛠 Тех. поддержка")
