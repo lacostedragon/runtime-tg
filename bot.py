@@ -40,15 +40,16 @@ dp  = Dispatcher(storage=MemoryStorage())
 # uuid -> last_seen
 clients: dict[str, float] = {}
 
+# Peak values loaded from DB on startup
+peak_all: int = 0
+peak_all_at: str = ""
+peak_day: int = 0
+peak_day_at: str = ""
+
 
 class SupportState(StatesGroup):
     waiting_support = State()
     waiting_bugreport = State()
-
-
-class DownloadStates(StatesGroup):
-    waiting_for_text = State()
-    waiting_for_file = State()
 
 
 class DownloadStates(StatesGroup):
@@ -133,17 +134,19 @@ async def get_user(user_id: int):
 
 
 async def update_peaks(current: int):
+    global peak_all, peak_all_at, peak_day, peak_day_at
     now = datetime.now(MSK)
     today = now.strftime("%Y-%m-%d")
     now_str = now.strftime("%d.%m.%Y %H:%M МСК")
+
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT peak_all, peak_all_at, peak_day, peak_day_at, peak_day_date FROM peak_online WHERE id = 1") as cur:
+        async with db.execute("SELECT peak_day_date FROM peak_online WHERE id = 1") as cur:
             row = await cur.fetchone()
-        peak_all, peak_all_at, peak_day, peak_day_at, peak_day_date = row
+            peak_day_date = row[0] if row else ""
 
         if peak_day_date != today:
             peak_day = 0
-            peak_day_at = None
+            peak_day_at = ""
 
         changed = False
         if current > peak_all:
@@ -155,7 +158,7 @@ async def update_peaks(current: int):
             peak_day_at = now_str
             changed = True
 
-        if changed or peak_day_date != today:
+        if changed:
             await db.execute(
                 "UPDATE peak_online SET peak_all=?, peak_all_at=?, peak_day=?, peak_day_at=?, peak_day_date=? WHERE id=1",
                 (peak_all, peak_all_at, peak_day, peak_day_at, today)
@@ -164,9 +167,16 @@ async def update_peaks(current: int):
 
 
 async def get_peaks():
+    return (peak_all, peak_all_at, peak_day, peak_day_at)
+
+
+async def load_peaks_from_db():
+    global peak_all, peak_all_at, peak_day, peak_day_at
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT peak_all, peak_all_at, peak_day, peak_day_at FROM peak_online WHERE id=1") as cur:
-            return await cur.fetchone()
+            row = await cur.fetchone()
+            if row:
+                peak_all, peak_all_at, peak_day, peak_day_at = row
 
 
 async def save_support_map(group_msg_id: int, user_id: int, type_: str):
@@ -238,6 +248,22 @@ async def require_sub_callback(callback: types.CallbackQuery) -> bool:
         )
         return False
     return True
+
+
+@dp.chat_member()
+async def on_chat_member_update(event: types.ChatMemberUpdated):
+    user = event.from_user
+    new_status = event.new_chat_member.status
+    
+    if new_status in ("left", "kicked"):
+        await bot.send_message(
+            user.id,
+            "❌ <b>Вы вышли из канала!</b>\n\n"
+            "Теперь вы не можете пользоваться ботом.\n\n"
+            "Пожалуйста, подпишитесь снова для продолжения использования.",
+            parse_mode="HTML",
+            reply_markup=subscribe_keyboard()
+        )
 
 
 # ─── HANDLERS ──────────────────────────────────────────────────────────────────
@@ -411,79 +437,7 @@ async def user_download_handler(message: types.Message):
         await message.answer("❌ Произошла ошибка при отправке файла. Пожалуйста, сообщите администратору.")
 
 
-# ─── DOWNLOAD ──────────────────────────────────────────────────────────────────
-
-async def get_download_info():
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT text, file_id FROM download_info WHERE id = 1") as cursor:
-            return await cursor.fetchone()
-
-async def update_download_info(text: str, file_id: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE download_info SET text = ?, file_id = ? WHERE id = 1", (text, file_id))
-        await db.commit()
-
-@dp.message(Command("download"), F.chat.id == ADMIN_GROUP)
-async def download_command(message: types.Message, state: FSMContext):
-    await state.set_state(DownloadStates.waiting_for_text)
-    await message.answer(
-        "⚙️ <b>Режим обновления файла для скачивания</b>\n\n"
-        "Шаг 1/2: Отправь мне текст-инструкцию, который увидят пользователи перед скачиванием.\n\n"
-        "Можно использовать HTML-теги для форматирования (<code>&lt;b&gt;</code>, <code>&lt;i&gt;</code> и т.д.).\n\n"
-        "Для отмены напиши /cancel",
-        parse_mode="HTML",
-        reply_markup=ReplyKeyboardRemove()
-    )
-
-@dp.message(DownloadStates.waiting_for_text, F.chat.id == ADMIN_GROUP)
-async def download_text_handler(message: types.Message, state: FSMContext):
-    if not message.text:
-        await message.answer("❌ Пожалуйста, отправь текстовое сообщение.")
-        return
-
-    await state.update_data(download_text=message.html_text) # Сохраняем с HTML
-    await state.set_state(DownloadStates.waiting_for_file)
-    await message.answer(
-        "Шаг 2/2: Отлично! Теперь отправь мне файл (например, .zip архив), который будут скачивать пользователи.",
-        parse_mode="HTML"
-    )
-
-@dp.message(DownloadStates.waiting_for_file, F.document, F.chat.id == ADMIN_GROUP)
-async def download_file_handler(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    download_text = data.get('download_text')
-    file_id = message.document.file_id
-
-    await update_download_info(download_text, file_id)
-    await state.clear()
-
-    await message.answer(
-        "✅ <b>Файл и инструкция успешно обновлены!</b>\n\nПользователи теперь будут получать новую версию.",
-        parse_mode="HTML",
-        reply_markup=main_keyboard()
-    )
-
-@dp.message(F.text == "📥 Скачать")
-async def user_download_handler(message: types.Message):
-    if not await require_sub(message):
-        return
-
-    info = await get_download_info()
-    text, file_id = (info[0], info[1]) if info else (None, None)
-
-    if not text or not file_id:
-        await message.answer("😔 К сожалению, файл для скачивания еще не был загружен администратором.")
-        return
-
-    # Отправляем инструкцию
-    await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
-    # Отправляем файл
-    try:
-        await message.answer_document(file_id)
-    except Exception as e:
-        log.error(f"Failed to send document by file_id: {e}")
-        await message.answer("❌ Произошла ошибка при отправке файла. Пожалуйста, сообщите администратору.")
-
+# ─── SUPPORT ───────────────────────────────────────────────────────────────────
 
 @dp.message(F.text == "🛠 Тех. поддержка")
 async def support_handler(message: types.Message, state: FSMContext):
@@ -632,6 +586,7 @@ async def cleanup_loop():
 
 async def main():
     await init_db()
+    await load_peaks_from_db()
 
     app = web.Application()
     app.router.add_get("/", handle_root)
